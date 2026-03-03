@@ -1,0 +1,18 @@
+# 期权策略分析平台依赖
+# 安装：pip install -r requirements.txt
+
+# 核心科学计算
+numpy>=1.24.0
+pandas>=2.0.0
+scipy>=1.10.0
+
+# 可视化
+plotly>=5.15.0
+streamlit>=1.28.0
+
+# 数据获取
+yfinance>=0.2.28
+
+# 测试
+pytest>=7.4.0
+pytest-cov>=4.1.0
