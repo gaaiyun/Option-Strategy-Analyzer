@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install ".[dev,market]"
+      - run: python -m pytest
+      - run: python -m build
+      - name: Verify wheel in a clean environment
+        shell: bash
+        run: |
+          python -m venv /tmp/option-analyzer-wheel
+          /tmp/option-analyzer-wheel/bin/python -m pip install dist/*.whl
+          /tmp/option-analyzer-wheel/bin/option-analyzer price --S 100 --K 105 --T 0.25 --sigma 0.25
+          /tmp/option-analyzer-wheel/bin/option-analyzer scenario --view neutral_range --S 100 --T 0.12 --sigma 0.25 --hv-30 0.20 --iv 0.30

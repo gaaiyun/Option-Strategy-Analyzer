@@ -3,10 +3,28 @@
 支持欧式/美式期权定价
 """
 
+import math
+
 import numpy as np
 from scipy.stats import norm
 from scipy.optimize import brentq
 from typing import Tuple, Optional
+
+
+def validate_market_inputs(S: float, K: float, T: float, r: float,
+                           sigma: float, q: float = 0.0) -> None:
+    values = {"S": S, "K": K, "T": T, "r": r, "sigma": sigma, "q": q}
+    for name, value in values.items():
+        if not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError(f"{name} must be a finite number")
+    if S <= 0:
+        raise ValueError("S must be greater than zero")
+    if K <= 0:
+        raise ValueError("K must be greater than zero")
+    if T < 0:
+        raise ValueError("T must be non-negative")
+    if sigma < 0 or (T > 0 and sigma == 0):
+        raise ValueError("sigma must be positive before expiry and non-negative at expiry")
 
 
 class OptionPricer:
@@ -24,6 +42,7 @@ class OptionPricer:
             sigma: 波动率
             q: 股息率（可选，默认 0）
         """
+        validate_market_inputs(S, K, T, r, sigma, q)
         self.S = S
         self.K = K
         self.T = T
@@ -113,18 +132,26 @@ class OptionPricer:
         返回:
             隐含波动率
         """
+        if self.T == 0:
+            return np.nan
+        if not isinstance(market_price, (int, float)) or not math.isfinite(market_price):
+            raise ValueError("market_price must be a finite number")
+        if market_price < 0:
+            raise ValueError("market_price must be non-negative")
+
+        original_sigma = self.sigma
+
         def objective(sigma):
             self.sigma = sigma
-            model_price = self.calculate_price(option_type, american)
-            return model_price - market_price
+            return self.calculate_price(option_type, american) - market_price
         
         # 使用 Brent 方法求解
         try:
-            iv = brentq(objective, 0.001, 5.0, xtol=tol)
-            return iv
+            return brentq(objective, 0.001, 5.0, xtol=tol)
         except ValueError:
-            # 如果无法收敛，返回 NaN
             return np.nan
+        finally:
+            self.sigma = original_sigma
     
     @staticmethod
     def get_option_chain(S: float, K_range: Tuple[float, float], T: float, 

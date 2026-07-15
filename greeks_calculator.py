@@ -5,7 +5,7 @@
 import numpy as np
 from scipy.stats import norm
 from typing import Dict, Tuple
-from option_pricer import OptionPricer
+from option_pricer import OptionPricer, validate_market_inputs
 
 
 class GreeksCalculator:
@@ -23,6 +23,7 @@ class GreeksCalculator:
             sigma: 波动率
             q: 股息率
         """
+        validate_market_inputs(S, K, T, r, sigma, q)
         self.S = S
         self.K = K
         self.T = T
@@ -36,6 +37,13 @@ class GreeksCalculator:
              (self.sigma * np.sqrt(self.T))
         d2 = d1 - self.sigma * np.sqrt(self.T)
         return d1, d2
+
+    @staticmethod
+    def _validate_option_type(option_type: str) -> str:
+        normalized = option_type.lower()
+        if normalized not in {"call", "put"}:
+            raise ValueError("option_type must be 'call' or 'put'")
+        return normalized
     
     def delta(self, option_type: str = 'call') -> float:
         """
@@ -49,15 +57,16 @@ class GreeksCalculator:
         返回:
             Delta 值
         """
+        option_type = self._validate_option_type(option_type)
         if self.T <= 0:
-            if option_type.lower() == 'call':
+            if option_type == 'call':
                 return 1.0 if self.S > self.K else 0.0
             else:
                 return -1.0 if self.S < self.K else 0.0
         
         d1, d2 = self._calculate_d1_d2()
         
-        if option_type.lower() == 'call':
+        if option_type == 'call':
             return np.exp(-self.q * self.T) * norm.cdf(d1)
         else:
             return np.exp(-self.q * self.T) * (norm.cdf(d1) - 1)
@@ -74,6 +83,7 @@ class GreeksCalculator:
         返回:
             Gamma 值
         """
+        self._validate_option_type(option_type)
         if self.T <= 0:
             return 0.0
         
@@ -93,6 +103,7 @@ class GreeksCalculator:
         返回:
             Theta 值（每日）
         """
+        option_type = self._validate_option_type(option_type)
         if self.T <= 0:
             return 0.0
         
@@ -100,7 +111,7 @@ class GreeksCalculator:
         
         term1 = -self.S * self.sigma * np.exp(-self.q * self.T) * norm.pdf(d1) / (2 * np.sqrt(self.T))
         
-        if option_type.lower() == 'call':
+        if option_type == 'call':
             term2 = self.q * self.S * np.exp(-self.q * self.T) * norm.cdf(d1)
             term3 = -self.r * self.K * np.exp(-self.r * self.T) * norm.cdf(d2)
             theta = term1 + term2 + term3
@@ -124,6 +135,7 @@ class GreeksCalculator:
         返回:
             Vega 值（波动率变化 1% 时的价格变化）
         """
+        self._validate_option_type(option_type)
         if self.T <= 0:
             return 0.0
         
@@ -145,12 +157,13 @@ class GreeksCalculator:
         返回:
             Rho 值（利率变化 1% 时的价格变化）
         """
+        option_type = self._validate_option_type(option_type)
         if self.T <= 0:
             return 0.0
         
         d1, d2 = self._calculate_d1_d2()
         
-        if option_type.lower() == 'call':
+        if option_type == 'call':
             rho = self.K * self.T * np.exp(-self.r * self.T) * norm.cdf(d2)
         else:
             rho = -self.K * self.T * np.exp(-self.r * self.T) * norm.cdf(-d2)
@@ -168,6 +181,7 @@ class GreeksCalculator:
         返回:
             包含所有希腊值的字典
         """
+        option_type = self._validate_option_type(option_type)
         pricer = OptionPricer(self.S, self.K, self.T, self.r, self.sigma, self.q)
         price = pricer.calculate_price(option_type)
         

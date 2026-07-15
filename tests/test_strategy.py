@@ -10,7 +10,7 @@ import os
 # 添加父目录到路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from strategy_builder import OptionLeg, OptionStrategy, StrategyBuilder
+from strategy_builder import OptionLeg, OptionStrategy, StrategyBuilder, UnderlyingLeg
 
 
 class TestOptionLeg:
@@ -265,39 +265,43 @@ class TestStrategyBuilder:
         # 验证各腿
         assert strategy.legs[0].option_type == 'put'
         assert strategy.legs[0].strike == 90
-        assert strategy.legs[0].long == False
+        assert strategy.legs[0].long == True
         
         assert strategy.legs[1].option_type == 'put'
         assert strategy.legs[1].strike == 95
-        assert strategy.legs[1].long == True
+        assert strategy.legs[1].long == False
         
         assert strategy.legs[2].option_type == 'call'
         assert strategy.legs[2].strike == 105
-        assert strategy.legs[2].long == True
+        assert strategy.legs[2].long == False
         
         assert strategy.legs[3].option_type == 'call'
         assert strategy.legs[3].strike == 110
-        assert strategy.legs[3].long == False
+        assert strategy.legs[3].long == True
     
     def test_covered_call(self, builder):
         """测试备兑看涨策略构建"""
         strategy = builder.covered_call(strike=105)
         
         assert strategy.name == '备兑看涨 (Covered Call)'
-        assert len(strategy.legs) == 1
-        assert strategy.legs[0].option_type == 'call'
-        assert strategy.legs[0].strike == 105
-        assert strategy.legs[0].long == False  # 卖出
+        assert len(strategy.legs) == 2
+        assert isinstance(strategy.legs[0], UnderlyingLeg)
+        assert strategy.legs[0].quantity == 1
+        assert strategy.legs[1].option_type == 'call'
+        assert strategy.legs[1].strike == 105
+        assert strategy.legs[1].long == False  # 卖出
     
     def test_protective_put(self, builder):
         """测试保护性看跌策略构建"""
         strategy = builder.protective_put(strike=95)
         
         assert strategy.name == '保护性看跌 (Protective Put)'
-        assert len(strategy.legs) == 1
-        assert strategy.legs[0].option_type == 'put'
-        assert strategy.legs[0].strike == 95
-        assert strategy.legs[0].long == True  # 买入
+        assert len(strategy.legs) == 2
+        assert isinstance(strategy.legs[0], UnderlyingLeg)
+        assert strategy.legs[0].quantity == 1
+        assert strategy.legs[1].option_type == 'put'
+        assert strategy.legs[1].strike == 95
+        assert strategy.legs[1].long == True  # 买入
     
     def test_iron_condor_profit_profile(self, builder):
         """测试铁鹰策略利润特征"""
@@ -310,17 +314,24 @@ class TestStrategyBuilder:
         # 验证策略结构
         assert len(strategy.legs) == 4
         assert strategy.legs[0].option_type == 'put'
-        assert strategy.legs[0].long == False  # 卖出低行权价看跌
+        assert strategy.legs[0].long == True   # 买入更低行权价看跌保护腿
         assert strategy.legs[1].option_type == 'put'
-        assert strategy.legs[1].long == True   # 买入高行权价看跌
+        assert strategy.legs[1].long == False  # 卖出较高行权价看跌
         assert strategy.legs[2].option_type == 'call'
-        assert strategy.legs[2].long == True   # 买入低行权价看涨
+        assert strategy.legs[2].long == False  # 卖出较低行权价看涨
         assert strategy.legs[3].option_type == 'call'
-        assert strategy.legs[3].long == False  # 卖出高行权价看涨
+        assert strategy.legs[3].long == True   # 买入更高行权价看涨保护腿
         
         # 验证有初始成本（可能是 debit 或 credit）
         cost = strategy.initial_cost()
         assert cost != 0
+
+        # 标准铁鹰应在中间区间盈利、两侧尾部受限亏损。
+        assert strategy.profit_at_expiration(100) > 0
+        assert strategy.profit_at_expiration(80) < 0
+        assert strategy.profit_at_expiration(120) < 0
+        assert np.isfinite(strategy.max_profit())
+        assert np.isfinite(strategy.max_loss())
         
         # 验证盈亏数据可以生成
         df = strategy.get_payoff_data()
@@ -338,6 +349,33 @@ class TestStrategyBuilder:
         # 价格下跌时亏损
         profit_down = strategy.profit_at_expiration(90)
         assert profit_down < 0
+
+
+def test_unbounded_and_bounded_strategy_profit_limits():
+    builder = StrategyBuilder(S=100, T=0.25, r=0.05, sigma=0.2)
+    assert builder.straddle().max_profit() == np.inf
+    assert np.isfinite(builder.straddle().max_loss())
+
+    covered = builder.covered_call(strike=105)
+    assert np.isfinite(covered.max_profit())
+    assert np.isfinite(covered.max_loss())
+
+    protective = builder.protective_put(strike=95)
+    assert protective.max_profit() == np.inf
+    assert np.isfinite(protective.max_loss())
+
+
+def test_underlying_legs_change_payoff_and_delta():
+    builder = StrategyBuilder(S=100, T=0.25, r=0.05, sigma=0.2)
+    covered = builder.covered_call(strike=105)
+    protective = builder.protective_put(strike=95)
+
+    assert covered.payoff_at_expiration(90) == 90
+    assert covered.payoff_at_expiration(120) == 105
+    assert protective.payoff_at_expiration(80) == 95
+    assert protective.payoff_at_expiration(120) == 120
+    assert covered.calculate_strategy_greeks()["delta"] > 0
+    assert protective.calculate_strategy_greeks()["delta"] > 0
 
 
 if __name__ == "__main__":

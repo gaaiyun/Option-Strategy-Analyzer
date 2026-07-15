@@ -7,8 +7,6 @@ import pandas as pd
 from typing import List, Dict, Tuple, Optional
 from scipy.stats import norm
 from scipy.optimize import minimize
-import warnings
-warnings.filterwarnings('ignore')
 
 try:
     import yfinance as yf
