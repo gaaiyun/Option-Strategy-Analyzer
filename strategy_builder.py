@@ -5,8 +5,8 @@
 
 import numpy as np
 import pandas as pd
-from typing import List, Dict, Tuple, Optional
-from option_pricer import OptionPricer, price_option
+from typing import List, Dict, Tuple, Optional, Union
+from option_pricer import OptionPricer, price_option, validate_market_inputs
 from greeks_calculator import GreeksCalculator
 
 
@@ -24,6 +24,13 @@ class OptionLeg:
             quantity: 数量
             long: True 为买入，False 为卖出
         """
+        option_type = option_type.lower()
+        if option_type not in {"call", "put"}:
+            raise ValueError("option_type must be 'call' or 'put'")
+        if not np.isfinite(strike) or strike <= 0:
+            raise ValueError("strike must be a positive finite number")
+        if not isinstance(quantity, int) or quantity <= 0:
+            raise ValueError("quantity must be a positive integer")
         self.option_type = option_type
         self.strike = strike
         self.quantity = quantity
@@ -50,10 +57,25 @@ class OptionLeg:
             return -self.quantity * intrinsic
 
 
+class UnderlyingLeg:
+    """标的资产腿，quantity 为正表示持有，负数表示做空。"""
+
+    def __init__(self, entry_price: float, quantity: float = 1.0):
+        if not np.isfinite(entry_price) or entry_price <= 0:
+            raise ValueError("entry_price must be a positive finite number")
+        if not np.isfinite(quantity) or quantity == 0:
+            raise ValueError("quantity must be a non-zero finite number")
+        self.entry_price = float(entry_price)
+        self.quantity = float(quantity)
+
+    def payoff_at_expiration(self, S_T: float) -> float:
+        return self.quantity * S_T
+
+
 class OptionStrategy:
     """期权策略类"""
     
-    def __init__(self, name: str, legs: List[OptionLeg], S: float, T: float, 
+    def __init__(self, name: str, legs: List[Union[OptionLeg, UnderlyingLeg]], S: float, T: float,
                 r: float, sigma: float, q: float = 0.0):
         """
         初始化期权策略
@@ -67,6 +89,7 @@ class OptionStrategy:
             sigma: 波动率
             q: 股息率
         """
+        validate_market_inputs(S, S, T, r, sigma, q)
         self.name = name
         self.legs = legs
         self.S = S
@@ -84,6 +107,9 @@ class OptionStrategy:
         """
         cost = 0.0
         for leg in self.legs:
+            if isinstance(leg, UnderlyingLeg):
+                cost += leg.entry_price * leg.quantity
+                continue
             pricer = OptionPricer(self.S, leg.strike, self.T, self.r, self.sigma, self.q)
             price = pricer.calculate_price(leg.option_type)
             
@@ -149,6 +175,28 @@ class OptionStrategy:
         
         return breakevens
     
+    def _profit_bounds(self) -> Tuple[float, float]:
+        """返回标的价格限制为非负时的理论最小/最大到期利润。"""
+        strikes = sorted({leg.strike for leg in self.legs
+                          if isinstance(leg, OptionLeg)})
+        points = [0.0, *strikes]
+        profits = [self.profit_at_expiration(price) for price in points]
+
+        right_tail_slope = 0.0
+        for leg in self.legs:
+            if isinstance(leg, UnderlyingLeg):
+                right_tail_slope += leg.quantity
+            elif leg.option_type == "call":
+                right_tail_slope += leg.quantity if leg.long else -leg.quantity
+
+        minimum = min(profits)
+        maximum = max(profits)
+        if right_tail_slope > 0:
+            maximum = np.inf
+        elif right_tail_slope < 0:
+            minimum = -np.inf
+        return minimum, maximum
+
     def max_profit(self, S_range: Tuple[float, float] = None) -> float:
         """
         计算最大利润
@@ -160,7 +208,7 @@ class OptionStrategy:
             最大利润
         """
         if S_range is None:
-            S_range = (self.S * 0.1, self.S * 2.0)
+            return self._profit_bounds()[1]
         
         S_values = np.linspace(S_range[0], S_range[1], 1000)
         profits = [self.profit_at_expiration(S) for S in S_values]
@@ -177,7 +225,7 @@ class OptionStrategy:
             最大损失（负值）
         """
         if S_range is None:
-            S_range = (self.S * 0.1, self.S * 2.0)
+            return self._profit_bounds()[0]
         
         S_values = np.linspace(S_range[0], S_range[1], 1000)
         profits = [self.profit_at_expiration(S) for S in S_values]
@@ -193,6 +241,9 @@ class OptionStrategy:
         greeks = {'delta': 0.0, 'gamma': 0.0, 'theta': 0.0, 'vega': 0.0, 'rho': 0.0}
         
         for leg in self.legs:
+            if isinstance(leg, UnderlyingLeg):
+                greeks['delta'] += leg.quantity
+                continue
             calc = GreeksCalculator(self.S, leg.strike, self.T, self.r, self.sigma, self.q)
             leg_greeks = calc.calculate_all(leg.option_type)
             
@@ -243,6 +294,7 @@ class StrategyBuilder:
             sigma: 波动率
             q: 股息率
         """
+        validate_market_inputs(S, S, T, r, sigma, q)
         self.S = S
         self.T = T
         self.r = r
@@ -350,10 +402,10 @@ class StrategyBuilder:
         构建铁鹰策略（Iron Condor）
         
         参数:
-            put_lower: 看跌期权低行权价（卖出）
-            put_higher: 看跌期权高行权价（买入）
-            call_lower: 看涨期权低行权价（买入）
-            call_higher: 看涨期权高行权价（卖出）
+            put_lower: 看跌期权低行权价（买入保护翼）
+            put_higher: 看跌期权高行权价（卖出内侧腿）
+            call_lower: 看涨期权低行权价（卖出内侧腿）
+            call_higher: 看涨期权高行权价（买入保护翼）
         
         返回:
             OptionStrategy 对象
@@ -367,11 +419,13 @@ class StrategyBuilder:
         if call_higher is None:
             call_higher = self.S * 1.10
         
+        if not (put_lower < put_higher < call_lower < call_higher):
+            raise ValueError("iron condor strikes must be strictly increasing")
         legs = [
-            OptionLeg('put', put_lower, 1, False),
-            OptionLeg('put', put_higher, 1, True),
-            OptionLeg('call', call_lower, 1, True),
-            OptionLeg('call', call_higher, 1, False)
+            OptionLeg('put', put_lower, 1, True),
+            OptionLeg('put', put_higher, 1, False),
+            OptionLeg('call', call_lower, 1, False),
+            OptionLeg('call', call_higher, 1, True)
         ]
         
         return OptionStrategy('铁鹰策略 (Iron Condor)', legs, self.S, self.T,
@@ -390,8 +444,8 @@ class StrategyBuilder:
         if strike is None:
             strike = self.S * 0.95
         
-        # 简化：用合成方式近似
         legs = [
+            UnderlyingLeg(self.S, 1),
             OptionLeg('put', strike, 1, True)
         ]
         
@@ -412,6 +466,7 @@ class StrategyBuilder:
             strike = self.S * 1.05
         
         legs = [
+            UnderlyingLeg(self.S, 1),
             OptionLeg('call', strike, 1, False)
         ]
         

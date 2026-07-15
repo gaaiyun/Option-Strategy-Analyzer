@@ -1,192 +1,144 @@
-# Option-Strategy-Analyzer
+# Option Strategy Analyzer
 
-Black-Scholes 期权定价 + 希腊值 + 7 种经典策略组合 + 波动率分析。v1 提供完整的
-Streamlit 仪表板和 85 个单元测试。v2 在不动核心定价/希腊值/策略库的前提下补
-三件实用的东西：
+一个用于期权教学与研究的确定性工具：Black-Scholes-Merton 欧式期权定价、
+Greeks、组合到期收益、理论盈亏边界、波动率分析和离线情景报告。Streamlit
+仪表板保留，CLI 可以在脚本和 CI 中使用。
 
-1. **CLI 入口** — v1 只能跑 Streamlit，没法脚本化。v2 加 `__main__.py` 子命令
-   覆盖定价、希腊、数据抓取、策略建议。
-2. **市场数据抓取** — v1 让用户手填 `S` / `r` / `sigma`，对 BSM 演示够，但实盘
-   经常**不知道当前 IV**。v2 加 yfinance 自动抓现价 + 历史波动率 + IV 代理（美股
-   接 VIX）。
-3. **LLM/规则策略建议器** — 给一段市场观点（"未来一个月强烈看涨"），LLM 或规则
-   启发式从 9 个策略里挑一个 + 给参数。LLM 缺 key 时退化到规则。
+本项目不连接券商、不提交订单，也不提供投资建议。模型价格不是市场报价，
+情景盈亏不是收益预测。
 
-## v2 新增模块
+## 当前能力
 
-| 文件 | 干什么 |
-|---|---|
-| `data_fetch.py` | `fetch_market_context(symbol)` 一次拉齐 spot + HV30/60 + IV 代理（VIX）+ `synthetic_market_context` 离线 demo |
-| `strategy_advisor.py` | `advise(market_view, hv_30, iv, ...)` 返回 `StrategyRecommendation`：9 个策略 + 7 种市场观点，LLM 或规则双路径 |
-| `__main__.py` | CLI：`price` / `greeks` / `fetch` / `advise` / `list-strategies` / `list-views` |
-| `tests/test_data_fetch.py` | 17 测试：mock yfinance |
-| `tests/test_strategy_advisor.py` | 26 测试：规则覆盖 7 种观点 + LLM mock |
-
-总 128 测试通过（85 v1 + 43 v2），3 秒内跑完。
-
-## v1 仍保留
-
-| 模块 | 干什么 |
-|---|---|
-| `option_pricer.py` | BSM 欧式 / 美式近似定价 |
-| `greeks_calculator.py` | Delta / Gamma / Theta / Vega / Rho |
-| `strategy_builder.py` | 7 种策略（跨式 / 宽跨式 / 牛熊价差 / 铁鹰 / 备兑 / 保护性看跌） |
-| `volatility_analyzer.py` | 历史 / 隐含波动率、GARCH 预测、期限结构、微笑 |
-| `dashboard.py` | Streamlit 交互式仪表板 |
+| 模块 | 状态 | 已验证边界 |
+| --- | --- | --- |
+| 欧式期权定价 | 可用 | BSM call/put、股息率、到期边界、IV 反解 |
+| 美式期权 | 教学近似 | 只取欧式价与内在价值较大者，不是完整 BAW 或二叉树 |
+| Greeks | 可用 | Delta、Gamma、Theta、Vega、Rho |
+| 组合策略 | 可用 | 9 种注册策略；Covered Call/Protective Put 包含标的腿 |
+| 理论盈亏边界 | 可用 | 按分段线性到期收益识别有限值与 `unbounded`，不再用有限网格冒充理论极值 |
+| 情景报告 | 可用 | 建议、组合、成本、Greeks、盈亏平衡点和 ±20% 五档到期 P&L |
+| 市场数据 | 部分可用 | yfinance 现价、历史波动率、同标的期权链近月 ATM IV；含来源与时点 |
+| LLM 观点解析 | 实验性 | OpenAI、Anthropic、DeepSeek；输出必须通过策略注册表，失败显式退回规则 |
+| 自动交易 | 不支持 | 没有账户、订单、仓位管理或实时风险控制 |
 
 ## 安装
 
 ```bash
-pip install -r requirements.txt
-# 可选：v2 数据抓取
-pip install yfinance
-# 可选：v2 LLM 策略建议
-pip install openai      # openai / deepseek
-pip install anthropic
+# 定价、Greeks、组合和离线情景
+python -m pip install -e .
+
+# 市场数据
+python -m pip install -e ".[market]"
+
+# Dashboard、市场数据和可选 LLM
+python -m pip install -e ".[full]"
+
+# 开发与测试
+python -m pip install -e ".[dev,market]"
 ```
+
+安装后可使用 `option-analyzer`。源码目录中的 `python __main__.py` 继续兼容。
 
 ## 快速开始
 
-### v2 CLI 入口
-
 ```bash
-# 定价单合约
-python __main__.py price --S 100 --K 105 --T 0.25 --r 0.05 --sigma 0.25 --type call
-# BSM 价格 : 3.4399
+# 欧式 call 定价
+option-analyzer price --S 100 --K 105 --T 0.25 --sigma 0.25
 
-# 算希腊值
-python __main__.py greeks --S 100 --K 95 --T 0.25 --r 0.05 --sigma 0.25 --type put
-# delta : -0.283374
-# gamma : +0.027086
-# vega  : +0.169287
-# ...
+# put Greeks
+option-analyzer greeks --S 100 --K 95 --T 0.25 --sigma 0.25 --type put
 
-# 抓 AAPL 当前价 + HV30/60 + VIX（IV 代理）
-python __main__.py fetch --symbol AAPL --days 90
+# 离线确定性情景：横盘、同标的 IV 高于 HV
+option-analyzer scenario \
+  --view neutral_range --S 100 --T 0.12 --sigma 0.25 \
+  --hv-30 0.20 --iv 0.30
 
-# 离线 demo
-python __main__.py fetch --synthetic --symbol AAPL
+# 真实市场画像；输出含 as_of、样本数、IV 来源与是否可比较
+option-analyzer fetch --symbol AAPL --days 120
 
-# 看可选市场观点（7 个）
-python __main__.py list-views
-
-# LLM/规则推荐策略
-python __main__.py advise --view neutral_range --hv-30 0.20 --iv 0.30
-# 推荐策略 : Iron Condor（IV > HV 富裕 → 卖波动率）
-
-python __main__.py advise --view hedging_protection --hv-30 0.25 --has-underlying
-# 推荐策略 : Protective Put（套保）
-
-# 用 LLM（需要 DEEPSEEK_API_KEY）
-python __main__.py advise --view neutral_range --hv-30 0.20 --iv 0.30 \
-    --view-text "AAPL 接下来 1 个月应该在 170-190 区间震荡" \
-    --use-llm --backend deepseek
-```
-
-### v1 Streamlit 仪表板（仍能用）
-
-```bash
+# Streamlit 仪表板
 streamlit run dashboard.py
 ```
 
-### 库调用
+`scenario` 的 `sigma` 是 BSM 定价假设；`hv-30` 和 `iv` 用于规则型策略选择。
+推荐行权价会解析成实际组合腿并随报告披露；模型期限与推荐期限相差超过 7 天时会拒绝计算。
+输出明确记录这些假设，并将理论无限利润写成 `null + unbounded=true`，保证 JSON
+严格可解析。
 
-```python
-from option_pricer import OptionPricer
-from greeks_calculator import GreeksCalculator
-from strategy_builder import OptionStrategy, OptionLeg
-from data_fetch import fetch_market_context
-from strategy_advisor import advise
+## 策略语义
 
-# v1：定价
-pricer = OptionPricer(S=100, K=105, T=0.25, r=0.05, sigma=0.25)
-price = pricer.european_call()        # 3.44
+| 策略 | 组合 |
+| --- | --- |
+| Long Call / Long Put | 单腿买方 |
+| Bull Call Spread | 买低执行价 call，卖高执行价 call |
+| Bear Put Spread | 买高执行价 put，卖低执行价 put |
+| Long Straddle / Strangle | 同执行价或不同执行价的 call + put 买方 |
+| Iron Condor | 买低 put、卖高 put、卖低 call、买高 call |
+| Covered Call | 持有标的 + 卖 call |
+| Protective Put | 持有标的 + 买 put |
 
-# v1：希腊值
-g = GreeksCalculator(S=100, K=105, T=0.25, r=0.05, sigma=0.25)
-greeks = g.calculate_all(option_type="call")
+组合的 `initial_cost()` 包含所有期权权利金；涉及标的的策略也包含标的初始成本。
+`max_profit()` 和 `max_loss()` 默认返回理论边界；只有显式传入价格范围时才做范围内
+数值扫描。
 
-# v2：抓市场数据
-ctx = fetch_market_context("AAPL", history_days=90)
-# ctx.spot / ctx.historical_vol_30d / ctx.iv_proxy
+## 市场数据边界
 
-# v2：让规则或 LLM 建议策略
-rec = advise(
-    market_view="moderate_bullish",
-    hv_30=ctx.historical_vol_30d,
-    iv=ctx.iv_proxy,
-    has_underlying=False,
-    view_text="未来一个月温和看涨，担心黑天鹅",
-    backend="deepseek",   # None 时用规则
-)
-print(rec.strategy_name, rec.parameters, rec.rationale)
+`fetch` 依次尝试：
+
+1. 从同一标的、接近 30 天的期权链取最接近平值的 call/put IV 中位数；
+2. 若链不可用，对少量美股返回 VIX 作为 `broad_market_index` 背景。
+
+只有第一类被标记为 `iv_proxy_comparable=true`。VIX 是 SPX 30 日隐含波动率，
+不能和 AAPL、TSLA 等个股 HV 直接比较后得出“个股 IV 富裕”。若把宽基代理传给
+`scenario`，必须加 `--iv-is-broad-market-proxy`，规则不会据此触发卖波动率判断。
+
+`change_24h_pct` 为“最新日收盘相对前一交易日收盘”的变化，不是严格滚动 24 小时。
+HV30/HV60 需要完整的 30/60 个收益观察，样本不足会显式失败，不会用两三个点仍标成
+HV30。
+
+## LLM 边界
+
+```bash
+option-analyzer advise \
+  --view neutral_range --hv-30 0.20 --iv 0.30 \
+  --view-text "未来一个月可能在区间内震荡" \
+  --use-llm --backend deepseek
 ```
 
-## 市场观点 → 策略对照表（v2 规则启发式）
-
-| 观点 | IV 富裕（IV > HV30 × 1.1） | IV 不富裕 |
-|---|---|---|
-| `strong_bullish` | Long Call | Long Call |
-| `moderate_bullish` | Bull Call Spread | Bull Call Spread |
-| `strong_bearish` | Long Put | Long Put |
-| `moderate_bearish` | Bear Put Spread | Bear Put Spread |
-| `high_volatility` | Iron Condor（卖 vol） | Long Straddle |
-| `neutral_range` | Iron Condor | Covered Call (有标的) / Iron Condor |
-| `hedging_protection` | Protective Put（有标的） | Long Put |
-
-LLM 路径覆盖 9 个完整策略 + 自由文本观点（"我看这个月强烈看涨但担心 earnings 黑天鹅"）。
+- 每个 provider 只读取自己的环境变量；DeepSeek 不会复用 OpenAI key。
+- LLM 只能从固定 9 个策略中选择，未知名称会被拒绝。
+- 缺 key、网络失败或 JSON 无效时，stderr 和输出中的 `fallback_reason` 会说明原因。
+- 加 `--require-llm` 可在 LLM 没有真正执行时返回非零，而不是接受规则结果。
+- LLM 不负责定价、理论边界或情景计算。
 
 ## 测试
 
 ```bash
-pytest tests/
+python -m pytest
+python -m build
 ```
 
-128 个测试，3 秒内跑完。yfinance / LLM 全部 mock，CI 友好。
+截至 2026-07-16，本地结果为 163 passed、1 skipped。CI 在 Python 3.11 和 3.13
+运行测试、构建 wheel，并在干净虚拟环境安装 wheel 后执行 CLI smoke。
 
-## 设计取舍
-
-- **CLI 没接策略组合构建**：`strategy_builder.OptionStrategy` 是组合多个 leg 的高
-  级 API，CLI 暴露它会让接口爆炸（多 leg 怎么传？）。`advise` 给"应该用哪个策略
-  + 初始参数"建议，组合细节让用户在 Streamlit 或 Python 里搭。
-- **IV 代理只支持美股 VIX**：BTC 的 BVOL 在 yfinance 不稳定，没接。其他 ticker 的
-  IV 代理表 `_IV_PROXIES` 可手动扩展。
-- **LLM 必须传 view_text**：自由文本是 LLM 路径的核心 —— 缺了它和规则路径没区别，
-  直接走规则更省 token。
+测试不证明 yfinance 有 SLA、市场报价可成交、模型适合真实交易，也不覆盖真实 LLM
+调用、券商接口和 Streamlit 全量视觉交互。
 
 ## 项目结构
 
-```
-Option-Strategy-Analyzer/
-├── __main__.py                # v2 CLI 统一入口
-├── README.md
-├── dashboard.py               # v1 Streamlit 仪表板
-├── option_pricer.py           # v1 BSM 定价
-├── greeks_calculator.py       # v1 希腊值
-├── strategy_builder.py        # v1 策略组合
-├── volatility_analyzer.py     # v1 波动率
-├── data_fetch.py              # v2 yfinance 数据抓取
-├── strategy_advisor.py        # v2 LLM/规则策略建议
-├── tests/                     # 128 测试
-│   ├── test_option_pricer.py
-│   ├── test_greeks.py
-│   ├── test_strategy.py
-│   ├── test_volatility.py
-│   ├── test_data_fetch.py     # v2 新增
-│   └── test_strategy_advisor.py  # v2 新增
-├── pytest.ini
-└── requirements.txt
+```text
+option_pricer.py          BSM 定价与 IV 反解
+greeks_calculator.py      Greeks
+strategy_builder.py       期权腿、标的腿与组合收益
+strategy_advisor.py       注册表约束的规则/LLM 建议
+strategy_scenario.py      可复算的离线组合情景
+data_fetch.py             yfinance 行情、HV 与 ATM option-chain IV
+volatility_analyzer.py    历史波动率、GARCH 与曲面工具
+option_analyzer_cli.py    可安装 CLI
+dashboard.py              Streamlit 仪表板
+tests/                    单元、CLI 与完整性测试
 ```
 
-## 已知限制
+## License
 
-- 美式期权定价是简单近似（取 max(欧式价, 内在价值)），不是 Barone-Adesi-Whaley
-  完整解析解。学院派演示够，实盘需要换 BAW 或二叉树。
-- IV 代理用 VIX 是粗代理 —— VIX 是 SPX 30 日 IV，对 individual stock 不一定准。
-  实盘要用 option chain 反推 ATM IV。
-- `advise` 输出的参数（"ATM" / "OTM +5%"）是字符串描述，需要用户自己换成具体行
-  权价喂给 `strategy_builder`。
-
-## 许可
-
-MIT
+[MIT](LICENSE)

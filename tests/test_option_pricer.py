@@ -20,6 +20,29 @@ class TestOptionPricer:
     def default_pricer(self):
         """默认定价器"""
         return OptionPricer(S=100, K=100, T=0.25, r=0.05, sigma=0.2)
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"S": -100, "K": 100, "T": 0.25, "r": 0.05, "sigma": 0.2},
+            {"S": 100, "K": 0, "T": 0.25, "r": 0.05, "sigma": 0.2},
+            {"S": 100, "K": 100, "T": -0.1, "r": 0.05, "sigma": 0.2},
+            {"S": 100, "K": 100, "T": 0.25, "r": 0.05, "sigma": 0},
+            {"S": 100, "K": 100, "T": 0.25, "r": float("nan"), "sigma": 0.2},
+        ],
+    )
+    def test_rejects_invalid_financial_inputs(self, kwargs):
+        with pytest.raises(ValueError):
+            OptionPricer(**kwargs)
+
+    def test_expiry_boundary_allows_zero_volatility(self):
+        pricer = OptionPricer(S=110, K=100, T=0, r=0.05, sigma=0)
+        assert pricer.european_call() == 10
+        assert pricer.european_put() == 0
+
+    def test_implied_volatility_is_not_identified_at_expiry(self):
+        pricer = OptionPricer(S=110, K=100, T=0, r=0.05, sigma=0)
+        assert np.isnan(pricer.implied_volatility(10, option_type="call"))
     
     def test_european_call_atm(self, default_pricer):
         """测试平值欧式看涨期权"""

@@ -330,11 +330,11 @@ def strategy_builder_tab(S: float, T: float, r: float, sigma: float, q: float):
     
     elif selected_strategy == "铁鹰策略 (Iron Condor)":
         col1, col2 = st.columns(2)
-        put_lower = col1.number_input("看跌低行权价", value=S * 0.90)
-        put_higher = col2.number_input("看跌高行权价", value=S * 0.95)
+        put_lower = col1.number_input("低行权价 Put（买入保护）", value=S * 0.90)
+        put_higher = col2.number_input("高行权价 Put（卖出）", value=S * 0.95)
         col3, col4 = st.columns(2)
-        call_lower = col3.number_input("看涨低行权价", value=S * 1.05)
-        call_higher = col4.number_input("看涨高行权价", value=S * 1.10)
+        call_lower = col3.number_input("低行权价 Call（卖出）", value=S * 1.05)
+        call_higher = col4.number_input("高行权价 Call（买入保护）", value=S * 1.10)
         strategy = builder.iron_condor(put_lower, put_higher, call_lower, call_higher)
     
     elif selected_strategy == "备兑看涨 (Covered Call)":
@@ -349,9 +349,11 @@ def strategy_builder_tab(S: float, T: float, r: float, sigma: float, q: float):
     st.subheader(f"📋 {strategy.name}")
     
     col1, col2, col3, col4 = st.columns(4)
+    max_profit = strategy.max_profit()
+    max_loss = strategy.max_loss()
     col1.metric("初始成本", f"${strategy.initial_cost():.4f}")
-    col2.metric("最大利润", f"${strategy.max_profit():.4f}")
-    col3.metric("最大损失", f"${strategy.max_loss():.4f}")
+    col2.metric("最大利润", "无上限" if np.isposinf(max_profit) else f"${max_profit:.4f}")
+    col3.metric("最大损失", "无下限" if np.isneginf(max_loss) else f"${max_loss:.4f}")
     
     breakevens = strategy.breakeven_points()
     if breakevens:

@@ -22,6 +22,7 @@ LLM 缺 key 时退化为基于市场观点 + IV 状态的简单分支规则。
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -43,6 +44,7 @@ class StrategyRecommendation:
     parameters: Dict
     market_view: str
     backend: str
+    fallback_reason: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -51,6 +53,7 @@ class StrategyRecommendation:
             "parameters": self.parameters,
             "market_view": self.market_view,
             "backend": self.backend,
+            "fallback_reason": self.fallback_reason,
         }
 
 
@@ -72,7 +75,8 @@ _STRATEGY_LIBRARY = {
 
 
 def _heuristic(view: MarketView, hv_30: float, iv: Optional[float],
-               has_underlying: bool = False) -> Dict:
+               has_underlying: bool = False,
+               iv_is_comparable: bool = True) -> Dict:
     """规则建议器（LLM 不可用时使用）。
 
     主要根据：
@@ -80,7 +84,9 @@ def _heuristic(view: MarketView, hv_30: float, iv: Optional[float],
     - IV 与历史波动率的对比（IV > HV → 卖方有利；IV < HV → 买方有利）
     - 是否已持有标的（影响 covered call / protective put 的可用性）
     """
-    iv_rich = (iv is not None and hv_30 > 0 and iv > hv_30 * 1.1)
+    iv_rich = (
+        iv_is_comparable and iv is not None and hv_30 > 0 and iv > hv_30 * 1.1
+    )
 
     if view == "strong_bullish":
         return {"strategy_name": "Long Call",
@@ -148,11 +154,13 @@ class _LLMClient:
     def __init__(self, backend: LLMBackend = "deepseek",
                  model: Optional[str] = None,
                  api_key: Optional[str] = None):
+        if backend not in {"openai", "anthropic", "deepseek"}:
+            raise ValueError(f"unsupported LLM backend: {backend!r}")
         self.backend = backend
         self.api_key = api_key or {
             "openai": os.getenv("OPENAI_API_KEY"),
             "anthropic": os.getenv("ANTHROPIC_API_KEY"),
-            "deepseek": os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY"),
+            "deepseek": os.getenv("DEEPSEEK_API_KEY"),
         }.get(backend)
         self.model = model or {
             "openai": "gpt-4o-mini",
@@ -210,8 +218,11 @@ def _advise_llm(view_text: str, hv_30: float, iv: Optional[float],
     )
     raw = _strip_fences(client.chat(system, user))
     data = json.loads(raw)
+    strategy_name = str(data.get("strategy_name", ""))
+    if strategy_name not in _STRATEGY_LIBRARY:
+        raise ValueError(f"strategy registry rejected: {strategy_name!r}")
     return {
-        "strategy_name": str(data.get("strategy_name", "Long Call")),
+        "strategy_name": strategy_name,
         "parameters": dict(data.get("parameters", {})),
         "rationale": str(data.get("rationale", "")),
     }
@@ -227,6 +238,7 @@ def advise(
     view_text: Optional[str] = None,
     backend: Optional[str] = None,
     llm_client: Optional[_LLMClient] = None,
+    iv_is_comparable: bool = True,
 ) -> StrategyRecommendation:
     """主入口：给观点 + 市场状态 → 给策略建议。
 
@@ -238,7 +250,17 @@ def advise(
     view_text : 用户自由文本观点，LLM 路径用得到
     backend : LLM backend；None 时走规则启发式
     """
+    if market_view not in MARKET_VIEWS:
+        raise ValueError(f"unknown market_view: {market_view}")
+    if not isinstance(hv_30, (int, float)) or not math.isfinite(hv_30) or hv_30 < 0:
+        raise ValueError("hv_30 must be a non-negative finite number")
+    if iv is not None and (
+        not isinstance(iv, (int, float)) or not math.isfinite(iv) or iv < 0
+    ):
+        raise ValueError("iv must be a non-negative finite number or None")
+
     client = llm_client
+    fallback_reason = None
     if client is None and backend:
         client = _LLMClient(backend=backend)
 
@@ -252,16 +274,26 @@ def advise(
                 market_view=market_view,
                 backend=f"llm:{client.backend}",
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            fallback_reason = f"{type(exc).__name__}: {exc}"
+    elif backend or llm_client:
+        if not client or not client.is_available():
+            backend_name = backend or getattr(client, "backend", "requested")
+            fallback_reason = f"{backend_name} LLM API key unavailable"
+        elif not view_text:
+            fallback_reason = "LLM view_text was not provided"
 
-    rec = _heuristic(market_view, hv_30, iv, has_underlying)
+    rec = _heuristic(
+        market_view, hv_30, iv, has_underlying,
+        iv_is_comparable=iv_is_comparable,
+    )
     return StrategyRecommendation(
         strategy_name=rec["strategy_name"],
         parameters=rec["parameters"],
         rationale=rec["rationale"],
         market_view=market_view,
         backend="heuristic",
+        fallback_reason=fallback_reason,
     )
 
 

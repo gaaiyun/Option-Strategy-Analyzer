@@ -145,6 +145,19 @@ def test_advise_llm_falls_back_on_bad_json():
     # 退化到 heuristic
     assert rec.backend == "heuristic"
     assert rec.strategy_name == "Long Call"
+    assert rec.fallback_reason
+
+
+def test_advise_rejects_strategy_name_outside_registry():
+    client = _LLMClient(backend="deepseek", api_key="sk-test")
+    client.chat = MagicMock(return_value=
+        '{"strategy_name": "Wire Funds", "parameters": {}, "rationale": "x"}'
+    )
+    rec = advise(market_view="neutral_range", hv_30=0.20, iv=0.30,
+                 view_text="range", llm_client=client)
+    assert rec.strategy_name == "Iron Condor"
+    assert rec.backend == "heuristic"
+    assert "registry" in rec.fallback_reason.lower()
 
 
 def test_advise_llm_handles_code_fence():
@@ -180,6 +193,19 @@ def test_llm_client_is_unavailable_without_key(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     c = _LLMClient(backend="deepseek")
     assert not c.is_available()
+
+
+def test_deepseek_never_reuses_openai_key(monkeypatch):
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-only-secret")
+    c = _LLMClient(backend="deepseek")
+    assert not c.is_available()
+    assert c.api_key is None
+
+
+def test_unknown_llm_backend_is_rejected_before_using_key():
+    with pytest.raises(ValueError, match="backend"):
+        _LLMClient(backend="typo", api_key="must-not-be-sent")
 
 
 def test_llm_client_default_models():

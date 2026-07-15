@@ -20,6 +20,16 @@ class TestGreeksCalculator:
     def default_calculator(self):
         """默认计算器"""
         return GreeksCalculator(S=100, K=100, T=0.25, r=0.05, sigma=0.2)
+
+    def test_rejects_invalid_financial_inputs(self):
+        with pytest.raises(ValueError):
+            GreeksCalculator(S=-100, K=100, T=0.25, r=0.05, sigma=0.2)
+
+    def test_rejects_unknown_option_type_in_public_methods(self):
+        calc = GreeksCalculator(S=100, K=100, T=0.25, r=0.05, sigma=0.2)
+        for method in (calc.delta, calc.gamma, calc.theta, calc.vega, calc.rho):
+            with pytest.raises(ValueError, match="option_type"):
+                method("other")
     
     def test_call_delta_atm(self, default_calculator):
         """测试平值看涨期权 Delta"""

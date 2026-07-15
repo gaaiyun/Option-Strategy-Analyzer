@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,6 +16,7 @@ from data_fetch import (
     MarketContext,
     _IV_PROXIES,
     annualized_volatility,
+    fetch_atm_iv,
     fetch_history,
     fetch_iv_proxy,
     fetch_market_context,
@@ -81,6 +83,54 @@ def test_annualized_volatility_handles_single_point():
     closes = pd.Series([100.0])
     vol = annualized_volatility(closes, window=30)
     assert vol == 0.0
+
+
+def test_annualized_volatility_can_require_full_window():
+    closes = pd.Series([100.0, 101.0, 102.0])
+    with pytest.raises(ValueError, match="30"):
+        annualized_volatility(closes, window=30, require_full_window=True)
+
+
+def test_fetch_history_rejects_nonpositive_days():
+    with pytest.raises(ValueError):
+        fetch_history("AAPL", days=0)
+
+
+def test_fetch_atm_iv_uses_symbol_option_chain():
+    expiry = (datetime.now(timezone.utc).date() + timedelta(days=30)).isoformat()
+    calls = pd.DataFrame({
+        "strike": [95.0, 100.0, 105.0],
+        "impliedVolatility": [0.30, 0.25, 0.28],
+    })
+    puts = pd.DataFrame({
+        "strike": [95.0, 100.0, 105.0],
+        "impliedVolatility": [0.32, 0.27, 0.29],
+    })
+    fake_ticker = type("Ticker", (), {
+        "options": (expiry,),
+        "option_chain": lambda self, expiry: type(
+            "Chain", (), {"calls": calls, "puts": puts}
+        )(),
+    })()
+    with patch("data_fetch._require_yfinance") as require:
+        require.return_value.Ticker.return_value = fake_ticker
+        iv, source, actual_expiry, dte = fetch_atm_iv("AAPL", spot=100.0)
+    assert iv == pytest.approx(0.26)
+    assert source == "AAPL option chain"
+    assert actual_expiry == expiry
+    assert 29 <= dte <= 30
+
+
+def test_fetch_atm_iv_rejects_expiry_far_from_target():
+    far_expiry = (
+        datetime.now(timezone.utc).date() + timedelta(days=365)
+    ).isoformat()
+    fake_ticker = type("Ticker", (), {"options": (far_expiry,)})()
+    with patch("data_fetch._require_yfinance") as require:
+        require.return_value.Ticker.return_value = fake_ticker
+        with pytest.raises(RuntimeError, match="target"):
+            fetch_atm_iv("AAPL", spot=100.0, target_days=30,
+                         max_expiry_deviation_days=14)
 
 
 # --- yfinance（mock）-------------------------------------------------------
